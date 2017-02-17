@@ -10,7 +10,7 @@
 set -e
 
 IMAGE="assemble_cli"
-ASSEMBLE_CLI="/Users/grayson/dev/assemble/cli"
+ASSEMBLE_CLI_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 # Setup options for connecting to docker host
 if [ -z "$DOCKER_HOST" ]; then
@@ -27,7 +27,7 @@ fi
 if [ "$(pwd)" != '/' ]; then
     VOLUMES="-v $(pwd):$(pwd)"
 fi
-VOLUMES="$VOLUMES -v $ASSEMBLE_CLI:/assemble_bin -v $DOCKER_CERT_PATH:$DOCKER_CERT_PATH"
+VOLUMES="$VOLUMES -v $ASSEMBLE_CLI_DIR:/assemble_bin -v $DOCKER_CERT_PATH:$DOCKER_CERT_PATH"
 
 # Only allocate tty if we detect one
 if [ -t 1 ]; then
