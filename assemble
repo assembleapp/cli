@@ -1,0 +1,167 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'thor'
+require 'json'
+require 'yaml'
+
+SCAFFOLDS = [
+  "ruby",
+  "node",
+].freeze
+
+SERVER = "http://814aff1a.ngrok.io"
+
+class MyCLI < Thor
+  desc "init BLOCK_NAME SCAFFOLD",
+    "Create a new Assemble block from a scaffold"
+  def init(blockname, scaffold)
+    unless SCAFFOLDS.include?(scaffold)
+      quit "Invalid scaffold. Please use one of: #{SCAFFOLDS.inspect}"
+    end
+
+    Dir.mktmpdir do |dir|
+      `git clone https://github.com/assembleapp/scaffolds.git #{dir}/assemble_scaffolds`
+      scaffold_dir = "#{dir}/assemble_scaffolds/#{scaffold}"
+
+      Dir.glob("#{scaffold_dir}/*").each do |file|
+        contents = File.read(file)
+
+        updated_contents = contents.
+          gsub("$BLOCK_NAME", "graysonwright/#{blockname}").
+          gsub("$BLOCK_SHORTNAME", blockname).
+          gsub("$GIT_URL", "git@github.com:graysonwright/#{blockname}")
+
+        File.write(file, updated_contents)
+      end
+
+      `cp -r #{scaffold_dir} #{blockname}`
+    end
+  end
+
+  desc "test", "test the current directory's block locally"
+  option :input,
+    banner: "<input_file>",
+    required: true,
+    type: :string
+  def test
+    unless File.exists?(options[:input])
+      quit "Could not find input file #{options[:input]}"
+    end
+
+    blockname = File.basename(FileUtils.pwd)
+    docker_img_tag = "assemble/#{blockname}"
+    container_assemble_dir = "/.assemble"
+
+    puts "Building image..."
+    puts `docker build -t #{docker_img_tag} .`
+
+    puts "Starting building block with input:"
+    puts JSON.pretty_generate(JSON.parse(File.read(options[:input])))
+
+    container = `docker run \
+      -d \
+      -it \
+      -e ASSEMBLE_BLOCK_NAME=#{blockname} \
+      -e ASSEMBLE_DIR=#{container_assemble_dir} \
+      #{docker_img_tag} \
+      /bin/bash`.strip
+
+    `docker exec #{container} mkdir #{container_assemble_dir}`
+    `docker cp #{options[:input]} #{container}:#{container_assemble_dir}/input.json`
+
+    block_assemble_configuration = YAML.parse(File.read("assemble.yml")).to_ruby
+    command = block_assemble_configuration["block"]["command"]
+
+    puts "Running `#{command}`"
+    puts
+    puts `docker exec #{container} #{command}`
+    puts
+
+    if `docker exec #{container} ls #{container_assemble_dir}`.split.include?("output.json")
+      Dir.mktmpdir do |dir|
+        `docker cp #{container}:#{container_assemble_dir}/output.json #{dir}/output.json`
+        puts "Output: "
+        # puts JSON.pretty_generate(JSON.parse(File.read("#{dir}/output.json")))
+        puts File.read("#{dir}/output.json")
+      end
+    else
+      puts "Block did not output any data"
+    end
+
+    `docker stop #{container}`
+    puts "Done"
+  end
+
+  desc "push", "publish the current directory's block to Assemble"
+  def push
+    p options
+  end
+
+  desc "run_block BLOCK_NAME", "run a block in the cloud, on the Assemble platform"
+  option :input,
+    banner: "<input_file>",
+    required: true,
+    type: :string
+  def run_block(block_name)
+    unless File.exists?(options[:input])
+      quit "Could not find input file #{options[:input]}"
+    end
+
+    require 'uri'
+    require 'net/http'
+
+    uri = URI.parse("#{SERVER}/blocks/#{block_name}/runs")
+    data = JSON.parse(File.read(options[:input]))
+
+    http = Net::HTTP.new(uri.host,uri.port)
+    req = Net::HTTP::Post.new(
+      uri.path,
+      initheader = {'Content-Type' =>'application/json'}
+    )
+    req.body = { data: data }.to_json
+    res = http.request(req)
+
+    if res.code == "200"
+      uri = URI.parse(JSON.parse(res.body)['url'])
+
+      poll_block_run(uri)
+    else
+      puts "Response #{res.code} #{res.message}: #{res.body}"
+    end
+  end
+
+  private
+
+  def poll_block_run(uri)
+    response = JSON.parse(Net::HTTP.get_response(uri).body)
+    print 'pending...'
+
+    while response['status'] == 'pending'
+      sleep 1
+      print '.'
+
+      response = JSON.parse(Net::HTTP.get_response(uri).body)
+    end
+
+    puts
+    puts "Block run completed."
+    puts
+    puts "STDOUT:" + '-' * 20
+    puts response['stdout']
+    puts
+    puts "STDERR:" + '-' * 20
+    puts response['stderr']
+    puts
+    puts "OUTPUT:" + '-' * 20
+    puts response['output']
+  end
+
+  def quit(message)
+    puts message
+    puts "Exiting."
+    exit
+  end
+end
+
+MyCLI.start(ARGV)
