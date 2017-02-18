@@ -13,7 +13,8 @@ SCAFFOLDS = [
   "node",
 ].freeze
 
-SERVER = "https://assembleapp.co"
+SERVER = "https://908e7088.ngrok.io"
+ASSEMBLE_CONFIG_PATH = "#{ENV['HOME']}/.assemble.yml"
 
 class Assemble
   include HTTParty
@@ -22,6 +23,15 @@ class Assemble
 end
 
 class MyCLI < Thor
+  desc "auth API_KEY", "Authenticate against the Assemble API"
+  def auth(key)
+    info = user_info(key)
+
+    puts "Authenticated as #{info['handle']}."
+    File.write(ASSEMBLE_CONFIG_PATH, { "auth" => { "api_key" => key } }.to_yaml)
+    puts "Saved credentials in #{ASSEMBLE_CONFIG_PATH}"
+  end
+
   desc "init BLOCK_NAME SCAFFOLD",
     "Create a new Assemble block from a scaffold"
   def init(blockname, scaffold)
@@ -217,9 +227,9 @@ class MyCLI < Thor
     puts response['output']
   end
 
-  def headers
+  def headers(key = api_key)
     {
-      "Authorization" => "Token token=\"#{token}\"",
+      "Authorization" => "Token token=\"#{key}\"",
       "Accept" => "application/json",
     }
   end
@@ -236,20 +246,25 @@ class MyCLI < Thor
     user_info["handle"]
   end
 
-  def user_info
-    @user_info ||= JSON.parse(Assemble.get("/user_info", headers: headers).body)
+  def user_info(key = api_key)
+    @user_info ||= JSON.parse(
+      Assemble.get(
+        "/user_info",
+        headers: headers(key),
+      ).body
+    )
   end
 
   def assemble_config
-    contents = File.read("#{ENV['HOME']}/.assemble.yml")
+    contents = File.read(ASSEMBLE_CONFIG_PATH)
     @assemble_config ||= YAML.parse(contents).to_ruby
   end
 
-  def token
+  def api_key
     assemble_config['auth']['api_key']
   rescue
     # TODO documentation about ~/.assemble.yml format
-    quit "Please sign into assemble and store your application token in `~/.assemble.yml`"
+    quit "Please sign into assemble and store your application api key in `~/.assemble.yml`"
   end
 
   def quit(message)
