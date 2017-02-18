@@ -1,16 +1,25 @@
 #!/usr/bin/env ruby
 
-require 'rubygems'
-require 'thor'
-require 'json'
-require 'yaml'
+require "json"
+require "octokit"
+require "rubygems"
+require "thor"
+require "uri"
+require "yaml"
+require "httparty"
 
 SCAFFOLDS = [
   "ruby",
   "node",
 ].freeze
 
-SERVER = "http://814aff1a.ngrok.io"
+SERVER = "https://assembleapp.co"
+
+class Assemble
+  include HTTParty
+
+  base_uri SERVER
+end
 
 class MyCLI < Thor
   desc "init BLOCK_NAME SCAFFOLD",
@@ -28,9 +37,9 @@ class MyCLI < Thor
         contents = File.read(file)
 
         updated_contents = contents.
-          gsub("$BLOCK_NAME", "graysonwright/#{blockname}").
+          gsub("$BLOCK_NAME", "#{user_handle}/#{blockname}").
           gsub("$BLOCK_SHORTNAME", blockname).
-          gsub("$GIT_URL", "git@github.com:graysonwright/#{blockname}")
+          gsub("$GIT_URL", "git@github.com:#{user_handle}/#{blockname}")
 
         File.write(file, updated_contents)
       end
@@ -49,7 +58,6 @@ class MyCLI < Thor
       quit "Could not find input file #{options[:input]}"
     end
 
-    blockname = File.basename(FileUtils.pwd)
     docker_img_tag = "assemble/#{blockname}"
     container_assemble_dir = "/.assemble"
 
@@ -95,7 +103,62 @@ class MyCLI < Thor
 
   desc "push", "publish the current directory's block to Assemble"
   def push
-    p options
+    if `git status`.empty?
+      puts "Git repository not found, initializing."
+      `git init`
+      `git add .`
+
+      `git config --global user.email "cli@assembleapp.co"`
+      `git config --global user.name "Assemble"`
+
+      `git commit -m "[init] Push as an Assemble block to GitHub"`
+    end
+
+    repo_name = nil
+
+    if `git remote -v`.include?("github.com")
+      quit "looks like this has already been pushed to GitHub"
+      repo_name = "TODO parse from git remote -v"
+    else
+      repo_name = "#{user_handle}/#{blockname}.block"
+
+      puts "Creating public GitHub repo, #{repo_name}"
+
+      github.create_repository(
+        repo_name.split("/").last,
+        description: "A block of code that can be run on #{SERVER}",
+        homepage: SERVER + "/blocks/#{user_handle}/#{blockname}",
+        private: false,
+      )
+
+      puts "Pushing block to git@github.com:#{repo_name}.git"
+      `git remote add origin git@github.com:#{repo_name}.git`
+      `git push -u origin master`
+
+      puts "Your block is now hosted on GitHub at:"
+      puts "https://github.com/#{repo_name}"
+    end
+
+    puts "Notifying #{SERVER}..."
+    response = Assemble.post(
+      "/blocks",
+      body: {
+        block: {
+          github_repo: repo_name,
+          name: blockname,
+        }
+      },
+      headers: headers,
+    )
+    puts JSON.pretty_generate(JSON.parse(response.body))
+    puts
+
+    puts "Block pushed to #{SERVER}"
+    puts "View your block at:"
+    puts "#{SERVER}/blocks/#{user_handle}/#{blockname}"
+    puts
+    puts "Run your block with:"
+    puts "assemble run_block #{user_handle}/#{blockname} --input input.json"
   end
 
   desc "run_block BLOCK_NAME", "run a block in the cloud, on the Assemble platform"
@@ -108,40 +171,37 @@ class MyCLI < Thor
       quit "Could not find input file #{options[:input]}"
     end
 
-    require 'uri'
-    require 'net/http'
-
-    uri = URI.parse("#{SERVER}/blocks/#{block_name}/runs")
-    data = JSON.parse(File.read(options[:input]))
-
-    http = Net::HTTP.new(uri.host,uri.port)
-    req = Net::HTTP::Post.new(
-      uri.path,
-      initheader = {'Content-Type' =>'application/json'}
+    response = Assemble.post(
+      "/blocks/#{block_name}/runs",
+      body: { data: JSON.parse(File.read(options[:input])) },
+      headers: headers,
     )
-    req.body = { data: data }.to_json
-    res = http.request(req)
 
-    if res.code == "200"
-      uri = URI.parse(JSON.parse(res.body)['url'])
+    if response.code == 200
+      uri = URI.parse(JSON.parse(response.body)['path'])
 
       poll_block_run(uri)
     else
-      puts "Response #{res.code} #{res.message}: #{res.body}"
+      puts "Response #{response.code} #{response.message}: #{response.body}"
     end
   end
 
   private
 
+  def blockname
+    File.basename(FileUtils.pwd)
+  end
+
   def poll_block_run(uri)
-    response = JSON.parse(Net::HTTP.get_response(uri).body)
+    response = Assemble.get(uri, headers: headers)
+    response = JSON.parse(response.body)
     print 'pending...'
 
     while response['status'] == 'pending'
       sleep 1
       print '.'
 
-      response = JSON.parse(Net::HTTP.get_response(uri).body)
+      response = JSON.parse(Assemble.get(uri, headers: headers).body)
     end
 
     puts
@@ -155,6 +215,41 @@ class MyCLI < Thor
     puts
     puts "OUTPUT:" + '-' * 20
     puts response['output']
+  end
+
+  def headers
+    {
+      "Authorization" => "Token token=\"#{token}\"",
+      "Accept" => "application/json",
+    }
+  end
+
+  def github
+    @github ||= Octokit::Client.new(access_token: github_token)
+  end
+
+  def github_token
+    user_info["github_token"]
+  end
+
+  def user_handle
+    user_info["handle"]
+  end
+
+  def user_info
+    @user_info ||= JSON.parse(Assemble.get("/user_info", headers: headers).body)
+  end
+
+  def assemble_config
+    contents = File.read("#{ENV['HOME']}/.assemble.yml")
+    @assemble_config ||= YAML.parse(contents).to_ruby
+  end
+
+  def token
+    assemble_config['auth']['api_key']
+  rescue
+    # TODO documentation about ~/.assemble.yml format
+    quit "Please sign into assemble and store your application token in `~/.assemble.yml`"
   end
 
   def quit(message)

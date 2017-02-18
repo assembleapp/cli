@@ -27,7 +27,9 @@ fi
 if [ "$(pwd)" != '/' ]; then
     VOLUMES="-v $(pwd):$(pwd)"
 fi
-VOLUMES="$VOLUMES -v $ASSEMBLE_CLI_DIR:/assemble_bin -v $DOCKER_CERT_PATH:$DOCKER_CERT_PATH"
+VOLUMES="$VOLUMES -v $ASSEMBLE_CLI_DIR:/assemble_bin"
+VOLUMES="$VOLUMES -v $DOCKER_CERT_PATH:$DOCKER_CERT_PATH"
+VOLUMES="$VOLUMES -v $HOME:/root"
 
 # Only allocate tty if we detect one
 if [ -t 1 ]; then
