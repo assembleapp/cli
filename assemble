@@ -15,6 +15,7 @@ SCAFFOLDS = [
 
 SERVER = "https://908e7088.ngrok.io"
 ASSEMBLE_CONFIG_PATH = "#{ENV['HOME']}/.assemble.yml"
+GITHUB_REMOTE_REGEX = /(?<=github.com[\:\/])(\w+\/[\w\.]+)(?=\.git)/i
 
 class Assemble
   include HTTParty
@@ -223,10 +224,10 @@ class MyCLI < Thor
 
     remotes = `git remote -v`
     if remotes.include?("github.com")
-      puts remotes
-      puts "Found an existing GitHub repo at "
-      quit "looks like this has already been pushed to GitHub"
-      repo_name = "TODO parse from git remote -v"
+      repos = GITHUB_REMOTE_REGEX.match(remotes)
+      repo_name = repos[1]
+
+      puts "Found an existing GitHub repo at #{repo_name}"
     else
       repo_name = "#{user_handle}/#{blockname}.block"
 
@@ -246,6 +247,8 @@ class MyCLI < Thor
       puts "Your block is now hosted on GitHub at:"
       puts "https://github.com/#{repo_name}"
     end
+
+    repo_name
   end
 
   def github
