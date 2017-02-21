@@ -69,14 +69,16 @@ class MyCLI < Thor
     end
 
     docker_img_tag = "assemble/#{blockname}"
+    build_dir = "."
     container_assemble_dir = "/.assemble"
 
-    puts "Building image..."
-    puts `docker build -t #{docker_img_tag} .`
+    build_image(docker_img_tag, build_dir)
 
-    puts "Starting building block with input:"
-    puts JSON.pretty_generate(JSON.parse(File.read(options[:input])))
+    puts "Built image for block"
+    puts "Starting block with input:"
+    puts JSON.pretty_generate(JSON.parse(File.read(options[:input])))[0..100]
 
+    # Start container
     container = `docker run \
       -d \
       -it \
@@ -85,9 +87,11 @@ class MyCLI < Thor
       #{docker_img_tag} \
       /bin/bash`.strip
 
+    # Move assemble-specific files into the container
     `docker exec #{container} mkdir #{container_assemble_dir}`
     `docker cp #{options[:input]} #{container}:#{container_assemble_dir}/input.json`
 
+    # Run the command
     block_assemble_configuration = YAML.parse(File.read("assemble.yml")).to_ruby
     command = block_assemble_configuration["block"]["command"]
 
@@ -113,41 +117,9 @@ class MyCLI < Thor
 
   desc "push", "publish the current directory's block to Assemble"
   def push
-    if `git status`.empty?
-      puts "Git repository not found, initializing."
-      `git init`
-      `git add .`
+    check_or_create_git_repo
 
-      `git config --global user.email "cli@assembleapp.co"`
-      `git config --global user.name "Assemble"`
-
-      `git commit -m "[init] Push as an Assemble block to GitHub"`
-    end
-
-    repo_name = nil
-
-    if `git remote -v`.include?("github.com")
-      quit "looks like this has already been pushed to GitHub"
-      repo_name = "TODO parse from git remote -v"
-    else
-      repo_name = "#{user_handle}/#{blockname}.block"
-
-      puts "Creating public GitHub repo, #{repo_name}"
-
-      github.create_repository(
-        repo_name.split("/").last,
-        description: "A block of code that can be run on #{SERVER}",
-        homepage: SERVER + "/blocks/#{user_handle}/#{blockname}",
-        private: false,
-      )
-
-      puts "Pushing block to git@github.com:#{repo_name}.git"
-      `git remote add origin git@github.com:#{repo_name}.git`
-      `git push -u origin master`
-
-      puts "Your block is now hosted on GitHub at:"
-      puts "https://github.com/#{repo_name}"
-    end
+    repo_name = find_or_create_github_repo
 
     puts "Notifying #{SERVER}..."
     response = Assemble.post(
@@ -198,8 +170,94 @@ class MyCLI < Thor
 
   private
 
+  def api_key
+    assemble_config['auth']['api_key']
+  rescue
+    # TODO documentation about ~/.assemble.yml format
+    quit "Please sign into assemble and store your application api key in `~/.assemble.yml`"
+  end
+
+  def assemble_config
+    contents = File.read(ASSEMBLE_CONFIG_PATH)
+    @assemble_config ||= YAML.parse(contents).to_ruby
+  end
+
   def blockname
     File.basename(FileUtils.pwd)
+  end
+
+  def build_image(docker_img_tag, build_dir)
+    puts "Building image #{docker_img_tag}..."
+    build_output = `docker build -t #{docker_img_tag} #{build_dir}`
+
+    unless build_output =~ /^Successfully built /
+      puts "Could not build the image. Please check your Dockerfile for errors."
+      puts "BUILD OUTPUT: --------------"
+      puts build_output
+      quit
+    end
+  end
+
+  def check_or_create_git_repo
+    if `git status`.empty?
+      puts "Git repository not found, initializing."
+      `git init`
+      `git add .`
+
+      `git config --global user.email "cli@assembleapp.co"`
+      `git config --global user.name "Assemble"`
+
+      `git commit -m "[init] Create an Assemble block"`
+    end
+  end
+
+  def headers(key = api_key)
+    {
+      "Authorization" => "Token token=\"#{key}\"",
+      "Accept" => "application/json",
+    }
+  end
+
+  def find_or_create_github_repo
+    repo_name = nil
+
+    remotes = `git remote -v`
+    if remotes.include?("github.com")
+      puts remotes
+      puts "Found an existing GitHub repo at "
+      quit "looks like this has already been pushed to GitHub"
+      repo_name = "TODO parse from git remote -v"
+    else
+      repo_name = "#{user_handle}/#{blockname}.block"
+
+      puts "Creating public GitHub repo, #{repo_name}"
+
+      github.create_repository(
+        repo_name.split("/").last,
+        description: "A block of code that can be run on #{SERVER}",
+        homepage: SERVER + "/blocks/#{user_handle}/#{blockname}",
+        private: false,
+      )
+
+      puts "Pushing block to git@github.com:#{repo_name}.git"
+      `git remote add origin git@github.com:#{repo_name}.git`
+      `git push -u origin master`
+
+      puts "Your block is now hosted on GitHub at:"
+      puts "https://github.com/#{repo_name}"
+    end
+  end
+
+  def github
+    @github ||= Octokit::Client.new(access_token: github_token)
+  end
+
+  def github_token
+    user_info["github_token"]
+  end
+
+  def user_handle
+    user_info["handle"]
   end
 
   def poll_block_run(uri)
@@ -227,44 +285,19 @@ class MyCLI < Thor
     puts response['output']
   end
 
-  def headers(key = api_key)
-    {
-      "Authorization" => "Token token=\"#{key}\"",
-      "Accept" => "application/json",
-    }
-  end
-
-  def github
-    @github ||= Octokit::Client.new(access_token: github_token)
-  end
-
-  def github_token
-    user_info["github_token"]
-  end
-
-  def user_handle
-    user_info["handle"]
-  end
-
   def user_info(key = api_key)
-    @user_info ||= JSON.parse(
-      Assemble.get(
-        "/user_info",
-        headers: headers(key),
-      ).body
-    )
-  end
+    @user_info ||= begin
+                     response = Assemble.get(
+                       "/user_info",
+                       headers: headers(key),
+                     )
 
-  def assemble_config
-    contents = File.read(ASSEMBLE_CONFIG_PATH)
-    @assemble_config ||= YAML.parse(contents).to_ruby
-  end
-
-  def api_key
-    assemble_config['auth']['api_key']
-  rescue
-    # TODO documentation about ~/.assemble.yml format
-    quit "Please sign into assemble and store your application api key in `~/.assemble.yml`"
+                     if response.code == 200
+                       JSON.parse(response.body)
+                     else
+                       quit "Invalid api key. Please re-run the `assemble auth` command with your account's api key."
+                     end
+                   end
   end
 
   def quit(message)
