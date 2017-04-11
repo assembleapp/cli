@@ -21,3 +21,9 @@ To use the wrapper, build the Dockerfile in the current directory with:
 ```
 docker build -t assemble_cli .
 ```
+
+And then create an alias to run the wrapper:
+
+```
+alias assemble='/path/to/assemble/cli/wrapper'
+```
